@@ -1,6 +1,5 @@
 
 const express = require('express');
-const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const Transaction = require('../models/Transaction');
@@ -10,15 +9,30 @@ const { auth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Initialize Razorpay
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-});
+// Initialize Razorpay only if keys are available
+let razorpay = null;
+if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+  const Razorpay = require('razorpay');
+  razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
+  });
+}
+
+// Helper function to check if Razorpay is configured
+const checkRazorpayConfig = (req, res, next) => {
+  if (!razorpay) {
+    return res.status(500).json({ 
+      message: 'Payment gateway not configured. Please set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET environment variables.' 
+    });
+  }
+  next();
+};
 
 // Create payment order
 router.post('/create-order', [
   auth,
+  checkRazorpayConfig,
   body('auction_id').isMongoId(),
   body('amount').isFloat({ min: 0 }),
   body('type').isIn(['bid_deposit', 'winning_payment'])
@@ -77,6 +91,7 @@ router.post('/create-order', [
 // Verify payment
 router.post('/verify', [
   auth,
+  checkRazorpayConfig,
   body('razorpay_order_id').notEmpty(),
   body('razorpay_payment_id').notEmpty(),
   body('razorpay_signature').notEmpty(),
@@ -168,6 +183,10 @@ router.get('/transactions', auth, async (req, res) => {
 
 // Webhook for payment status updates
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!razorpay) {
+    return res.status(500).json({ message: 'Payment gateway not configured' });
+  }
+
   try {
     const webhookSignature = req.headers['x-razorpay-signature'];
     const webhookBody = req.body;
