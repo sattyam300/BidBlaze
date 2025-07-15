@@ -1,6 +1,4 @@
-
 const express = require('express');
-const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const Transaction = require('../models/Transaction');
 const Auction = require('../models/Auction');
@@ -9,33 +7,13 @@ const { auth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Initialize Razorpay only if keys are available
-let razorpay = null;
-if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
-  const Razorpay = require('razorpay');
-  razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET
-  });
-}
-
-// Helper function to check if Razorpay is configured
-const checkRazorpayConfig = (req, res, next) => {
-  if (!razorpay) {
-    return res.status(500).json({ 
-      message: 'Payment gateway not configured. Please set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET environment variables.' 
-    });
-  }
-  next();
-};
-
-// Create payment order
-router.post('/create-order', [
+// Create payment record
+router.post('/create-payment', [
   auth,
-  checkRazorpayConfig,
   body('auction_id').isMongoId(),
   body('amount').isFloat({ min: 0 }),
-  body('type').isIn(['bid_deposit', 'winning_payment'])
+  body('type').isIn(['bid_deposit', 'winning_payment']),
+  body('payment_method').isIn(['wallet', 'bank_transfer', 'cash'])
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -43,7 +21,7 @@ router.post('/create-order', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { auction_id, amount, type } = req.body;
+    const { auction_id, amount, type, payment_method, payment_reference } = req.body;
 
     // Verify auction exists
     const auction = await Auction.findById(auction_id);
@@ -51,51 +29,34 @@ router.post('/create-order', [
       return res.status(404).json({ message: 'Auction not found' });
     }
 
-    // Create Razorpay order
-    const order = await razorpay.orders.create({
-      amount: Math.round(amount * 100), // Convert to paise
-      currency: 'INR',
-      receipt: `receipt_${Date.now()}`,
-      notes: {
-        auction_id,
-        user_id: req.user._id.toString(),
-        type
-      }
-    });
-
     // Create transaction record
     const transaction = new Transaction({
       user_id: req.user._id,
       auction_id,
       amount,
       type,
-      payment_method: 'razorpay',
-      razorpay_order_id: order.id,
+      payment_method,
+      payment_reference,
       status: 'pending'
     });
 
     await transaction.save();
 
     res.json({
-      order_id: order.id,
-      amount: order.amount,
-      currency: order.currency,
+      message: 'Payment record created successfully',
       transaction_id: transaction._id,
-      key: process.env.RAZORPAY_KEY_ID
+      transaction
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Verify payment
-router.post('/verify', [
+// Confirm payment
+router.post('/confirm', [
   auth,
-  checkRazorpayConfig,
-  body('razorpay_order_id').notEmpty(),
-  body('razorpay_payment_id').notEmpty(),
-  body('razorpay_signature').notEmpty(),
-  body('transaction_id').isMongoId()
+  body('transaction_id').isMongoId(),
+  body('payment_reference').optional()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -103,18 +64,7 @@ router.post('/verify', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, transaction_id } = req.body;
-
-    // Verify signature
-    const body = razorpay_order_id + "|" + razorpay_payment_id;
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(body.toString())
-      .digest('hex');
-
-    if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ message: 'Invalid payment signature' });
-    }
+    const { transaction_id, payment_reference } = req.body;
 
     // Update transaction
     const transaction = await Transaction.findById(transaction_id);
@@ -127,8 +77,9 @@ router.post('/verify', [
     }
 
     transaction.status = 'completed';
-    transaction.razorpay_payment_id = razorpay_payment_id;
-    transaction.razorpay_signature = razorpay_signature;
+    if (payment_reference) {
+      transaction.payment_reference = payment_reference;
+    }
     transaction.processed_at = new Date();
     await transaction.save();
 
@@ -140,7 +91,7 @@ router.post('/verify', [
     }
 
     res.json({
-      message: 'Payment verified successfully',
+      message: 'Payment confirmed successfully',
       transaction
     });
   } catch (error) {
@@ -180,80 +131,5 @@ router.get('/transactions', auth, async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
-
-// Webhook for payment status updates
-router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  if (!razorpay) {
-    return res.status(500).json({ message: 'Payment gateway not configured' });
-  }
-
-  try {
-    const webhookSignature = req.headers['x-razorpay-signature'];
-    const webhookBody = req.body;
-
-    // Verify webhook signature
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET || '')
-      .update(webhookBody)
-      .digest('hex');
-
-    if (webhookSignature !== expectedSignature) {
-      return res.status(400).json({ message: 'Invalid webhook signature' });
-    }
-
-    const event = JSON.parse(webhookBody);
-
-    // Handle different webhook events
-    switch (event.event) {
-      case 'payment.captured':
-        // Handle successful payment
-        await handlePaymentSuccess(event.payload.payment.entity);
-        break;
-      case 'payment.failed':
-        // Handle failed payment
-        await handlePaymentFailure(event.payload.payment.entity);
-        break;
-    }
-
-    res.json({ status: 'ok' });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ message: 'Webhook processing failed' });
-  }
-});
-
-// Helper functions
-async function handlePaymentSuccess(payment) {
-  try {
-    const transaction = await Transaction.findOne({
-      razorpay_order_id: payment.order_id
-    });
-
-    if (transaction && transaction.status === 'pending') {
-      transaction.status = 'completed';
-      transaction.razorpay_payment_id = payment.id;
-      transaction.processed_at = new Date();
-      await transaction.save();
-    }
-  } catch (error) {
-    console.error('Error handling payment success:', error);
-  }
-}
-
-async function handlePaymentFailure(payment) {
-  try {
-    const transaction = await Transaction.findOne({
-      razorpay_order_id: payment.order_id
-    });
-
-    if (transaction && transaction.status === 'pending') {
-      transaction.status = 'failed';
-      transaction.failure_reason = payment.error_description;
-      await transaction.save();
-    }
-  } catch (error) {
-    console.error('Error handling payment failure:', error);
-  }
-}
 
 module.exports = router;

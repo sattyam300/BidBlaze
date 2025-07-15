@@ -33,12 +33,10 @@ const transactionSchema = new mongoose.Schema({
   },
   payment_method: {
     type: String,
-    enum: ['razorpay', 'wallet', 'bank_transfer'],
+    enum: ['wallet', 'bank_transfer', 'cash'],
     required: true
   },
-  razorpay_order_id: String,
-  razorpay_payment_id: String,
-  razorpay_signature: String,
+  payment_reference: String,
   failure_reason: String,
   processed_at: Date,
   reference_number: {
