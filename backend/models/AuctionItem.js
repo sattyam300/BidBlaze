@@ -38,7 +38,18 @@ const auctionItemSchema = new mongoose.Schema({
   category: {
     type: String,
     required: [true, 'Category is required'],
-    enum: ['electronics', 'furniture', 'clothing', 'books', 'collectibles', 'art', 'jewelry', 'vehicles', 'other']
+    enum: [
+      'electronics', 
+      'furniture', 
+      'clothing', 
+      'books', 
+      'collectibles', 
+      'art', 
+      'jewelry', 
+      'vehicles', 
+      'sports',
+      'other'
+    ]
   },
   status: {
     type: String,
@@ -49,6 +60,10 @@ const auctionItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+  isActive: {
+    type: Boolean,
+    default: true
   }
 }, {
   timestamps: true
@@ -72,5 +87,9 @@ auctionItemSchema.pre('save', function(next) {
   this.updateStatus();
   next();
 });
+
+// Index for better query performance
+auctionItemSchema.index({ status: 1, category: 1 });
+auctionItemSchema.index({ startTime: 1, endTime: 1 });
 
 module.exports = mongoose.model('AuctionItem', auctionItemSchema);
