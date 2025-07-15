@@ -1,11 +1,10 @@
-
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt');
 
 const userSchema = new mongoose.Schema({
-  full_name: {
+  name: {
     type: String,
-    required: [true, 'Full name is required'],
+    required: [true, 'Name is required'],
     trim: true,
     maxlength: [100, 'Name cannot exceed 100 characters']
   },
@@ -19,39 +18,12 @@ const userSchema = new mongoose.Schema({
   password: {
     type: String,
     required: [true, 'Password is required'],
-    minlength: [6, 'Password must be at least 6 characters'],
-    select: false
+    minlength: [6, 'Password must be at least 6 characters']
   },
   role: {
     type: String,
-    enum: ['user', 'seller', 'admin'],
+    enum: ['user', 'admin'],
     default: 'user'
-  },
-  phone: {
-    type: String,
-    match: [/^\+?[\d\s-()]+$/, 'Please enter a valid phone number']
-  },
-  address: {
-    street: String,
-    city: String,
-    state: String,
-    zip_code: String,
-    country: String
-  },
-  kyc_status: {
-    type: String,
-    enum: ['pending', 'verified', 'rejected'],
-    default: 'pending'
-  },
-  avatar_url: String,
-  is_active: {
-    type: Boolean,
-    default: true
-  },
-  last_login: Date,
-  email_verified: {
-    type: Boolean,
-    default: false
   }
 }, {
   timestamps: true
